@@ -6,13 +6,13 @@ import uuid
 import telebot
 from flask import Flask, jsonify, request
 
-# നിങ്ങളുടെ ടെലഗ്രാം ബോട്ട് ടോക്കൻ ഇവിടെ നൽകുക (അല്ലെങ്കിൽ Render-ൽ Environment Variable ആയി വെക്കാം)
+# ടെലഗ്രാം ബോട്ട് ടോക്കൻ (Render-ൽ Environment Variable ആയി നൽകുക)
 TOKEN = os.environ.get("BOT_TOKEN", "8615503680:AAEGns_9BY8PKk6tX_yaOfTCJJnQrEjILo0")
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 
-# ഡാറ്റാബേസ് സെറ്റപ്പ് (കീകളും സമയവും സേവ് ചെയ്യാൻ)
+# ഡാറ്റാബേസ് സെറ്റപ്പ്
 def init_db():
   conn = sqlite3.connect("keys.db", check_same_thread=False)
   cursor = conn.cursor()
@@ -30,15 +30,26 @@ def init_db():
 init_db()
 
 
-# 1. ടെലഗ്രാം ബോട്ട് കമാൻഡ്: /genkey <മണിക്കൂർ>
+# 1. ടെലഗ്രാം ബോട്ട് കമാൻഡ്: /genkey <മണിക്കൂർ> <ഡിവൈസ്_ഐഡി>
 @bot.message_handler(commands=["genkey"])
 def generate_key(message):
   try:
     args = message.text.split()
-    # സമയം മണിക്കൂറിൽ നൽകാം (ഉദാഹരണത്തിന്: /genkey 24 - ഒരു ദിവസത്തേക്ക്)
+    # ഉദാഹരണത്തിന്: /genkey 24 abc123xyz
     hours = int(args[1]) if len(args) > 1 else 24
+    device_id = args[2] if len(args) > 2 else None
 
-    # യുണീക്കായ ഒരു കീ ഉണ്ടാക്കുന്നു
+    if not device_id:
+      bot.reply_to(
+          message,
+          "⚠️ **ശ്രദ്ധിക്കുക:** ദയവായി ഡിവൈസ് ഐഡിയും കൂടി ചേർക്കുക!\n\nഉപയോഗിക്കേണ്ട"
+          " വിധം:\n`/genkey <മണിക്കൂർ> <ഡിവൈസ്_ഐഡി>`\nഉദാഹരണത്തിന്: `/genkey 24"
+          " abc123xyz`",
+          parse_mode="Markdown",
+      )
+      return
+
+    # യുണീക്കായ കീ ഉണ്ടാക്കുന്നു
     key = "ELITE-" + str(uuid.uuid4())[:8].upper()
 
     expiry = datetime.now() + timedelta(hours=hours)
@@ -48,22 +59,22 @@ def generate_key(message):
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO keys (key, expiry_time, device_id) VALUES (?, ?, ?)",
-        (key, expiry_str, None),
+        (key, expiry_str, device_id),
     )
     conn.commit()
     conn.close()
 
     bot.reply_to(
         message,
-        f"✅ **New Key Generated Successfully!**\n\n🔑 Key: `{key}`\n⏳ Validity:"
-        f" {hours} Hours\n📅 Expires At: {expiry_str}",
+        f"✅ **Device-Locked Key Generated!**\n\n🔑 Key: `{key}`\n📱 Device ID:"
+        f" `{device_id}`\n⏳ Validity: {hours} Hours\n📅 Expires At:"
+        f" {expiry_str}",
         parse_mode="Markdown",
     )
   except Exception as e:
     bot.reply_to(
         message,
-        "⚠️ ഉപയോഗിക്കേണ്ട വിധം: `/genkey 24` (24 മണിക്കൂറിന്) അല്ലെങ്കിൽ `/genkey"
-        " 1` (1 മണിക്കൂറിന്)",
+        "⚠️ ഉപയോഗ രീതി തെറ്റാണ്. `/genkey 24 <device_id>` എന്ന് ഉപയോഗിക്കുക.",
         parse_mode="Markdown",
     )
 
@@ -72,12 +83,12 @@ def generate_key(message):
 def send_welcome(message):
   bot.reply_to(
       message,
-      "👋 ഹായ്! എലൈറ്റ് ലൈസൻസ് ബോത്തിലേക്ക് സ്വാഗതം.\nകീ ഉണ്ടാക്കാൻ `/genkey"
-      " <hours>` എന്ന് ടൈപ്പ് ചെയ്യുക.",
+      "👋 ഹായ്! എലൈറ്റ് ലൈസൻസ് ബോത്തിലേക്ക് സ്വാഗതം.\nഡിവൈസ് ഐഡിയോടെ കീ ഉണ്ടാക്കാൻ"
+      " `/genkey <hours> <device_id>` എന്ന് ടൈപ്പ് ചെയ്യുക.",
   )
 
 
-# 2. ആപ്പ് കീ പരിശോധിക്കാൻ ഉപയോഗിക്കുന്ന വെബ് റൂട്ട് (API)
+# 2. വെബ് സർവർ & വെരിഫിക്കേഷൻ API
 @app.route("/")
 def home():
   return "Elite License Server is Running & Active!"
@@ -96,7 +107,9 @@ def verify_key():
 
   conn = sqlite3.connect("keys.db", check_same_thread=False)
   cursor = conn.cursor()
-  cursor.execute("SELECT expiry_time, device_id FROM keys WHERE key = ?", (key,))
+  cursor.execute(
+      "SELECT expiry_time, device_id FROM keys WHERE key = ?", (key,)
+  )
   row = cursor.fetchone()
 
   if not row:
@@ -111,9 +124,8 @@ def verify_key():
     conn.close()
     return jsonify({"status": "expired", "message": "കീയുടെ കാലാവധി കഴിഞ്ഞു!"}), 200
 
-  # ഡിവൈസ് ലോക്ക് പരിശോധിക്കുന്നു (ഒരു ഡിവൈസിൽ മാത്രം വർക്ക് ചെയ്യാൻ)
+  # ഡിവൈസ് ലോക്ക് പരിശോധിക്കുന്നു
   if registered_device is None:
-    # ആദ്യമായി ഉപയോഗിക്കുന്ന ഡിവൈസ് ആയതിനാൽ ഈ കീ ആ ഡിവൈസിലേക്ക് ലോക്ക് ചെയ്യുന്നു
     cursor.execute(
         "UPDATE keys SET device_id = ? WHERE key = ?", (device_id, key)
     )
@@ -128,10 +140,7 @@ def verify_key():
     )
   elif registered_device == device_id:
     conn.close()
-    return (
-        jsonify({"status": "success", "message": "കീ വെരിഫൈ ചെയ്തു!"}),
-        200,
-    )
+    return jsonify({"status": "success", "message": "കീ വെരിഫൈ ചെയ്തു!"}), 200
   else:
     conn.close()
     return (
@@ -143,13 +152,13 @@ def verify_key():
     )
 
 
-# ബോട്ടും വെബ് സർവറും ഒരുമിച്ച് റൺ ചെയ്യാൻ
+# ബോട്ട് റൺ ചെയ്യാനുള്ള ഫംഗ്ഷൻ
 def run_bot():
   bot.infinity_polling()
 
 
 if __name__ == "__main__":
-  # ബോട്ട് റൺ ചെയ്യാൻ വേറൊരു ത്രെഡ് സ്റ്റാർട്ട് ചെയ്യുന്നു
+  # ബോട്ട് ബാക്ക്ഗ്രൗണ്ടിൽ റൺ ചെയ്യാൻ ത്രെഡ് സ്റ്റാർട്ട് ചെയ്യുന്നു
   t = threading.Thread(target=run_bot)
   t.daemon = True
   t.start()
